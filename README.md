@@ -1,36 +1,37 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# OMS — 2인용 통합 업무 관리 시스템
 
-## Getting Started
+Next.js 15 (App Router) · TypeScript · Tailwind CSS 4 · Supabase (PostgreSQL / Auth / Storage) · Vercel
 
-First, run the development server:
+설계: [docs/DESIGN.md](docs/DESIGN.md) — 폴더 구조, DB 설계, 화면 명세, 구현 순서.
+모든 개발·테스트 데이터는 가상 데이터만 사용한다.
 
+## 현재 단계: 1단계 (구조·설계)
+
+### 실행 방법
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
+cp .env.example .env.local   # 값 채우기
+npm run dev                  # http://localhost:3000
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+### 환경변수
+| 이름 | 공개 여부 | 설명 |
+|---|---|---|
+| `NEXT_PUBLIC_SUPABASE_URL` | 공개 | Supabase 프로젝트 URL |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | 공개 | anon key (RLS로 보호) |
+| `SUPABASE_SERVICE_ROLE_KEY` | **서버 전용** | 관리자 초대에만 사용. `NEXT_PUBLIC_` 금지 |
+| `SITE_URL` | 서버 전용 | 초대 메일 리다이렉트 주소 |
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+### 테스트
+```bash
+npm run typecheck && npm run lint && npm test && npm run build
+```
+단위 테스트: 업무번호 형식, 상태 전이 규칙, 공개 경로 판정, service role 키 노출 방지(정적 검사).
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
-
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+### 완료 기준
+- [x] 폴더 구조·설계 문서 작성
+- [x] Supabase 브라우저/서버/관리자 클라이언트 분리, `server-only`로 비밀키 격리
+- [x] 미들웨어: 비로그인 시 `/login?next=...` 리다이렉트
+- [x] 사이드바·상단바 레이아웃 셸, 7개 화면 라우트(플레이스홀더)
+- [x] typecheck / lint / test / build 통과
+- [ ] 설계 검토 및 확정 → 2단계(SQL 마이그레이션) 진행
