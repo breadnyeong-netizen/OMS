@@ -30,3 +30,18 @@ describe("관리자 비밀키 노출 방지", () => {
     }
   });
 });
+
+describe("서버 전용 모듈 격리", () => {
+  it("service role 을 쓰는 모듈은 server-only", () => {
+    for (const f of ["src/lib/users/create.ts", "src/lib/supabase/admin.ts", "src/lib/auth/member.ts"]) {
+      expect(readFileSync(f, "utf8"), f).toMatch(/^import "server-only";/m);
+    }
+  });
+  it("관리자 서버 액션은 실행 전에 requireAdmin 을 호출", () => {
+    const src = readFileSync("src/app/(app)/settings/actions.ts", "utf8");
+    for (const fn of ["createUser", "setUserActive", "addCategory", "setCategoryActive"]) {
+      const body = src.slice(src.indexOf(`export async function ${fn}(`)).split("export async function")[1];
+      expect(body, fn).toMatch(/^[^]*?\{\s*await requireAdmin\(\);/);
+    }
+  });
+});

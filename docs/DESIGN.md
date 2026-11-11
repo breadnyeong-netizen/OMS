@@ -28,7 +28,6 @@ oms/
 │  │  ├─ (app)/tasks/[taskNo]/  # 5. 업무 상세 및 처리 이력
 │  │  ├─ (app)/search/          # 6. 통합 검색
 │  │  ├─ (app)/settings/        # 7. 환경 설정 (프로필·업무유형·사용자 초대)
-│  │  └─ api/admin/invite/      # 관리자 초대 (서버 전용, service role 사용)
 │  ├─ components/
 │  │  ├─ layout/                # Sidebar, Topbar
 │  │  └─ ui/                    # Badge, Table, Toast 등 공통 UI
@@ -255,4 +254,5 @@ tasks      1──N attachments  (comment_id 선택 FK → task_comments)
 
 - 클라이언트는 `task_year`, `task_seq`, `created_by`, `completed_at` 등 시스템 컬럼을 **보낼 권한 자체가 없다** (컬럼 단위 GRANT). 보내면 `42501`.
 - 사용자 컨텍스트(`auth.uid()`)가 없는 업무 수정은 거부된다. service role로 업무를 직접 바꾸는 운영 작업도 막히므로, 데이터 보정은 마이그레이션으로 한다.
+- 사용자 생성은 별도 API 라우트 대신 환경 설정 화면의 **서버 액션**(`settings/actions.ts`)으로 처리한다. 실행 전 `requireAdmin()`으로 관리자 여부를 확인하고, 그 뒤에만 service role을 쓴다. 첫 관리자는 `npm run user:create`로 만든다.
 - `.local` 도메인 내부 이메일이 Supabase Auth에서 허용되는지는 3단계에서 실제 프로젝트로 확인한다. 거부되면 `LOGIN_EMAIL_DOMAIN` 상수만 바꾸면 된다.
