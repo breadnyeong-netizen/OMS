@@ -1,6 +1,6 @@
-# 2인용 통합 OMS — 설계 문서 (1단계 산출물, v0.1 초안)
+# 2인용 통합 OMS — 설계 문서 (v1.0 확정)
 
-> 상태: **검토 대기**. 이 문서가 확정되면 2단계에서 `supabase/migrations/` SQL을 작성한다.
+> 상태: **확정 (2026-11-11)**. 2단계 마이그레이션: `supabase/migrations/`, 테스트: `supabase/tests/`, `scripts/db/`.
 > 모든 예시·테스트 데이터는 가상 데이터다.
 
 ---
@@ -85,13 +85,14 @@ tasks      1──N attachments  (comment_id 선택 FK → task_comments)
 | 컬럼 | 타입 | 제약 |
 |---|---|---|
 | id | uuid | **PK**, FK → `auth.users(id)` ON DELETE RESTRICT |
-| email | text | NOT NULL, UNIQUE |
+| username | text | NOT NULL, UNIQUE, CHECK `username ~ '^[a-z0-9][a-z0-9_.-]{2,19}$'` (로그인 아이디) |
 | display_name | text | NOT NULL, CHECK `char_length(btrim(display_name)) BETWEEN 1 AND 50` |
 | role | text | NOT NULL DEFAULT `'member'`, CHECK `role IN ('admin','member')` |
 | is_active | boolean | NOT NULL DEFAULT true |
 | created_at / updated_at | timestamptz | NOT NULL DEFAULT now() |
 
-- **최대 2명 제한**: BEFORE INSERT/UPDATE 트리거가 `LOCK TABLE profiles IN SHARE ROW EXCLUSIVE MODE` 후 활성 사용자 수 ≤ 2를 검사 → 동시 초대 2건이 와도 3번째는 실패.
+- **최대 2명 제한**: BEFORE INSERT/UPDATE 트리거가 advisory lock으로 직렬화한 뒤 활성 사용자 수 ≤ 2를 검사 → 동시 초대 2건이 와도 3번째는 실패. 마지막 관리자는 비활성화·강등 불가.
+- **아이디 로그인**: Supabase Auth는 이메일 기반이므로 아이디를 내부 이메일 `{아이디}@oms.local`로 변환한다(메일 발송 없음). 계정은 관리자가 아이디·초기 비밀번호로 직접 생성한다(`auth.admin.createUser`).
 - profiles는 **초대 API(service role)만 생성**한다. Supabase 대시보드에서 공개 회원가입을 끈다. 혹시 auth.users에 다른 계정이 생겨도 profile이 없으므로 `is_member()`가 false → 모든 데이터 차단.
 
 #### categories
@@ -136,7 +137,7 @@ tasks      1──N attachments  (comment_id 선택 FK → task_comments)
 |---|---|---|
 | id | bigint | **PK** IDENTITY |
 | task_id | uuid | NOT NULL, FK → tasks(id) ON DELETE RESTRICT |
-| action | text | NOT NULL, CHECK IN (`created`,`status_changed`,`assignee_changed`,`priority_changed`,`completed`,`reopened`,`edited`) |
+| action | text | NOT NULL, CHECK IN (`created`,`status_changed`,`assignee_changed`,`priority_changed`,`edited`. 완료·재개는 `status_changed`의 `detail`에 처리 결과 / 직전 결과 스냅샷으로 기록) |
 | from_value | text | NULL |
 | to_value | text | NULL |
 | detail | jsonb | NULL (예: 재개 시 직전 처리 결과·완료일시 스냅샷) |
@@ -178,7 +179,7 @@ tasks      1──N attachments  (comment_id 선택 FK → task_comments)
 | task_logs | `(task_id, created_at)` | 상세 타임라인 |
 | task_comments | `(task_id, created_at)` + GIN trgm on `body` | 타임라인, 검색 |
 | attachments | `(task_id)` | 상세 첨부 목록 |
-| profiles | UNIQUE `email` | — |
+| profiles | UNIQUE `username` | 로그인 |
 
 > 한국어 검색: PostgreSQL 기본 full-text 사전은 한국어 형태소를 지원하지 않으므로 `pg_trgm` + `ILIKE`를 쓴다. 3글자 미만 검색어는 인덱스를 못 타서 순차 탐색이 되지만, 2인 사용 규모(수천 건)에서는 문제없다.
 
@@ -189,7 +190,7 @@ tasks      1──N attachments  (comment_id 선택 FK → task_comments)
 | **업무번호 발급** | `BEFORE INSERT` 트리거: `pg_advisory_xact_lock(hashtext('oms_task_no'), year)` 획득 → `max(task_seq)+1` 계산. 같은 연도 발급이 트랜잭션 단위로 직렬화되며, `UNIQUE(task_year, task_seq)`가 최종 방어선. 연도는 `Asia/Seoul` 기준. 클라이언트가 보낸 task_year/task_seq 값은 무시(덮어씀). |
 | **상태 변경 이력** | `BEFORE UPDATE` 트리거가 OLD/NEW 비교 → `task_logs`에 `status_changed`(이전/변경 상태, `auth.uid()`, `clock_timestamp()`) 기록. 담당자·우선순위 변경도 동일. 트리거는 `SECURITY DEFINER`로 로그를 쓰고, 사용자에게는 task_logs INSERT 권한이 없다. |
 | **완료일시** | 같은 트리거에서 `→ done`이면 `completed_at = now()`, `completed_by = auth.uid()` 설정 (클라이언트 값 무시). `done →` 다른 상태(재개)면 직전 `resolution`·`completed_at`을 `task_logs.detail`에 스냅샷 저장 후 `completed_at/by`·`resolution`을 NULL로, `reopen_count + 1`. |
-| **잃어버린 갱신 방지** | 앱은 RPC `update_task(p_id, p_expected_version, ...)` 로만 수정. `version`이 다르면 `40001` 오류 → 화면에 "다른 사용자가 먼저 수정했습니다. 새로고침 후 다시 시도하세요." |
+| **잃어버린 갱신 방지** | 앱은 수정 시 읽었던 `version`을 함께 보낸다. 트리거가 현재 값과 다르면 `40001` 오류를 내고, 같으면 +1. 동시에 두 요청이 오면 뒤 요청은 증가한 version과 비교되어 거부 → 화면에 "다른 사용자가 먼저 수정했습니다. 새로고침 후 다시 시도하세요." |
 | **보호 컬럼** | 트리거에서 `id, task_year, task_seq, created_by, created_at, completed_at, completed_by, reopen_count, version` 직접 변경을 무시/거부. |
 | **append-only** | `task_logs`, `task_comments`: UPDATE/DELETE 정책 없음 + `REVOKE UPDATE, DELETE` + 이를 막는 트리거(service role 포함 차단, 마이그레이션으로만 해제). |
 | **업무 삭제 비활성** | tasks에 DELETE 정책 없음 + `REVOKE DELETE`. FK는 모두 `ON DELETE RESTRICT`. |
@@ -197,14 +198,14 @@ tasks      1──N attachments  (comment_id 선택 FK → task_comments)
 ### 2.6 RLS 정책 요약
 
 공통 헬퍼(모두 `SECURITY DEFINER STABLE`, `search_path = ''`):
-- `app.is_member()` → `auth.uid()`의 활성 profile 존재 여부
-- `app.is_admin()` → 활성 + role='admin'
+- `private.is_member()` → `auth.uid()`의 활성 profile 존재 여부
+- `private.is_admin()` → 활성 + role='admin'
 
 | 테이블 | SELECT | INSERT | UPDATE | DELETE |
 |---|---|---|---|---|
 | profiles | member | ✕ (service role만) | 본인 `display_name`만 (컬럼 권한) / admin은 `is_active` | ✕ |
 | categories | member | admin | admin | ✕ |
-| tasks | member | member, `created_by = auth.uid()` | member (RPC 경유) | ✕ |
+| tasks | member | member, `created_by = auth.uid()` | member (허용 컬럼만) | ✕ |
 | task_logs | member | ✕ (트리거만) | ✕ | ✕ |
 | task_comments | member | member, `author_id = auth.uid()` | ✕ | ✕ |
 | attachments | member | member, `uploaded_by = auth.uid()` | ✕ | ✕ |
@@ -218,7 +219,7 @@ tasks      1──N attachments  (comment_id 선택 FK → task_comments)
 
 | # | 화면 | 경로 | 주요 기능 |
 |---|---|---|---|
-| 1 | 로그인 | `/login` | 이메일+비밀번호 로그인, 초대 메일 링크로 최초 비밀번호 설정, 실패 시 한국어 오류("이메일 또는 비밀번호가 올바르지 않습니다"), 비회원 계정은 로그인 직후 차단 안내 |
+| 1 | 로그인 | `/login` | 아이디+비밀번호 로그인, 관리자가 발급한 초기 비밀번호로 최초 로그인 후 변경, 실패 시 한국어 오류("아이디 또는 비밀번호가 올바르지 않습니다"), 비회원 계정은 로그인 직후 차단 안내 |
 | 2 | 대시보드 | `/dashboard` | 상태별 건수 카드, 내 담당 미완료 업무, 긴급/기한 임박 업무, 최근 처리 이력 10건, (6단계) 월별 접수·완료 통계 |
 | 3 | 업무 목록 | `/tasks` | 표(업무번호·유형·제목·상태·우선순위·담당자·등록일·기한), 필터(상태·유형·우선순위·담당자·기간), 키워드, 정렬, 페이지네이션(20건), 필터는 URL 쿼리에 유지, 모바일에서는 카드형 |
 | 4 | 신규 등록 | `/tasks/new` | 유형·제목·요청 내용·요청자·우선순위·담당자·기한 입력, 클라이언트+서버(zod) 검증, 저장 후 상세로 이동 및 "OMS-2026-0001 업무가 등록되었습니다" 안내 |
@@ -242,10 +243,16 @@ tasks      1──N attachments  (comment_id 선택 FK → task_comments)
 | 6 | 통합 검색, 첨부파일, 대시보드 통계 | 한국어 부분 검색, 비공개 첨부 다운로드 |
 | 7 | 권한·기능 테스트, Vercel 배포 | 통합 테스트 통과, 운영 환경 동작 확인 |
 
-## 5. 확인이 필요한 결정 사항
+## 5. 확정된 결정 사항
 
-1. **요청자**: 외부 요청자를 자유 텍스트(`requester`)로 둘지, 별도 관리할지 — 초안은 자유 텍스트.
-2. **재개 시 처리 결과**: 초안은 이전 결과를 로그에 보존하고 업무의 `resolution`은 비움. 유지를 원하면 변경.
-3. **관리자**: 두 명 중 한 명만 admin, 다른 한 명은 member로 가정 (권한 차이는 유형 관리·초대뿐).
-4. **첨부 용량**: 파일당 20MB, 허용 형식 제한 여부.
-5. **로그인 방식**: 이메일+비밀번호 (매직 링크로 바꿀 수 있음).
+1. **요청자**: 자유 텍스트(`requester`, 100자 이내).
+2. **재개 시 처리 결과**: 직전 결과·완료일시·완료자를 `task_logs.detail`에 보존하고 업무의 `resolution`은 비운다.
+3. **관리자**: 1명 admin, 1명 member. 차이는 업무 유형 관리·사용자 생성/비활성화뿐.
+4. **첨부**: 파일당 20MB, 형식 제한 없음 (버킷 `file_size_limit` + 테이블 CHECK).
+5. **로그인**: 아이디 + 비밀번호 (2.3 profiles 참고).
+
+## 6. 구현 중 확인된 사항
+
+- 클라이언트는 `task_year`, `task_seq`, `created_by`, `completed_at` 등 시스템 컬럼을 **보낼 권한 자체가 없다** (컬럼 단위 GRANT). 보내면 `42501`.
+- 사용자 컨텍스트(`auth.uid()`)가 없는 업무 수정은 거부된다. service role로 업무를 직접 바꾸는 운영 작업도 막히므로, 데이터 보정은 마이그레이션으로 한다.
+- `.local` 도메인 내부 이메일이 Supabase Auth에서 허용되는지는 3단계에서 실제 프로젝트로 확인한다. 거부되면 `LOGIN_EMAIL_DOMAIN` 상수만 바꾸면 된다.
